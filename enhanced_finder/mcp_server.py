@@ -17,6 +17,7 @@ from mcp.types import (
 from .config import FinderConfig
 from .indexer import DocumentIndexer
 from .simple_agents import SimpleSearchAgent, SimpleIndexingAgent
+from .knowledge_graph import KnowledgeGraphAgent
 
 
 class EnhancedFinderMCPServer:
@@ -27,6 +28,7 @@ class EnhancedFinderMCPServer:
         self.indexer = None
         self.search_agent = None
         self.indexing_agent = None
+        self.kg_agent = None
         self.server = Server("enhanced-finder")
         
         self._setup_handlers()
@@ -166,6 +168,81 @@ class EnhancedFinderMCPServer:
                         },
                         "required": ["action"]
                     }
+                ),
+                Tool(
+                    name="build_knowledge_graph",
+                    description="Build a knowledge graph from indexed documents using cosine similarity",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "similarity_threshold": {
+                                "type": "number",
+                                "description": "Minimum similarity threshold for connecting documents (0.0-1.0)",
+                                "default": 0.7
+                            }
+                        }
+                    }
+                ),
+                Tool(
+                    name="find_related_documents",
+                    description="Find documents related to a specific file using the knowledge graph",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Path to the file to find related documents for"
+                            },
+                            "max_results": {
+                                "type": "integer",
+                                "description": "Maximum number of related documents to return",
+                                "default": 5
+                            }
+                        },
+                        "required": ["file_path"]
+                    }
+                ),
+                Tool(
+                    name="analyze_document_clusters",
+                    description="Analyze clusters of similar documents in the knowledge graph",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "min_similarity": {
+                                "type": "number",
+                                "description": "Minimum similarity for documents to be in the same cluster",
+                                "default": 0.8
+                            }
+                        }
+                    }
+                ),
+                Tool(
+                    name="get_central_documents",
+                    description="Find the most central/important documents in the knowledge graph",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "centrality_type": {
+                                "type": "string",
+                                "enum": ["betweenness", "closeness", "degree", "eigenvector"],
+                                "description": "Type of centrality measure to use",
+                                "default": "betweenness"
+                            },
+                            "max_results": {
+                                "type": "integer",
+                                "description": "Maximum number of central documents to return",
+                                "default": 5
+                            }
+                        }
+                    }
+                ),
+                Tool(
+                    name="get_knowledge_graph_stats",
+                    description="Get statistics about the knowledge graph",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {}
+                    }
                 )
             ]
         
@@ -183,6 +260,16 @@ class EnhancedFinderMCPServer:
                     return await self._handle_get_stats(arguments)
                 elif name == "configure_paths":
                     return await self._handle_configure_paths(arguments)
+                elif name == "build_knowledge_graph":
+                    return await self._handle_build_knowledge_graph(arguments)
+                elif name == "find_related_documents":
+                    return await self._handle_find_related_documents(arguments)
+                elif name == "analyze_document_clusters":
+                    return await self._handle_analyze_document_clusters(arguments)
+                elif name == "get_central_documents":
+                    return await self._handle_get_central_documents(arguments)
+                elif name == "get_knowledge_graph_stats":
+                    return await self._handle_get_knowledge_graph_stats(arguments)
                 else:
                     return [TextContent(type="text", text=f"Unknown tool: {name}")]
             
@@ -197,6 +284,7 @@ class EnhancedFinderMCPServer:
             
             self.search_agent = SimpleSearchAgent(self.config, self.indexer)
             self.indexing_agent = SimpleIndexingAgent(self.config, self.indexer)
+            self.kg_agent = KnowledgeGraphAgent(self.config, self.indexer)
     
     async def _handle_search_files(self, arguments: dict) -> list[TextContent]:
         """Handle file search requests."""
@@ -352,6 +440,137 @@ class EnhancedFinderMCPServer:
         
         else:
             return [TextContent(type="text", text="Invalid action. Use 'add', 'remove', or 'list'")]
+    
+    async def _handle_build_knowledge_graph(self, arguments: dict) -> list[TextContent]:
+        """Handle knowledge graph building requests."""
+        await self._initialize_components()
+        
+        similarity_threshold = arguments.get("similarity_threshold", 0.7)
+        
+        response_text = f"Building knowledge graph with similarity threshold {similarity_threshold}...\n\n"
+        
+        try:
+            stats = await self.kg_agent.build_graph(similarity_threshold)
+            
+            response_text += "**Knowledge Graph Built Successfully!**\n\n"
+            response_text += f"- Nodes added: {stats['nodes_added']}\n"
+            response_text += f"- Edges added: {stats['edges_added']}\n"
+            response_text += f"- Errors: {stats['errors']}\n"
+            response_text += f"- Similarity threshold: {similarity_threshold}\n"
+            
+        except Exception as e:
+            response_text += f"Error building knowledge graph: {str(e)}"
+        
+        return [TextContent(type="text", text=response_text)]
+    
+    async def _handle_find_related_documents(self, arguments: dict) -> list[TextContent]:
+        """Handle finding related documents requests."""
+        await self._initialize_components()
+        
+        file_path = arguments.get("file_path", "")
+        max_results = arguments.get("max_results", 5)
+        
+        if not file_path:
+            return [TextContent(type="text", text="File path is required")]
+        
+        try:
+            related = self.kg_agent.find_related_documents(file_path, max_results)
+            
+            if not related:
+                return [TextContent(type="text", text=f"No related documents found for '{file_path}'")]
+            
+            response_text = f"**Related Documents for '{Path(file_path).name}':**\n\n"
+            
+            for i, doc in enumerate(related, 1):
+                file_name = Path(doc['file_path']).name
+                similarity = doc['similarity_score']
+                
+                response_text += f"{i}. **{file_name}**\n"
+                response_text += f"   Path: `{doc['file_path']}`\n"
+                response_text += f"   Similarity: {similarity:.3f}\n\n"
+            
+        except Exception as e:
+            response_text = f"Error finding related documents: {str(e)}"
+        
+        return [TextContent(type="text", text=response_text)]
+    
+    async def _handle_analyze_document_clusters(self, arguments: dict) -> list[TextContent]:
+        """Handle document clustering analysis requests."""
+        await self._initialize_components()
+        
+        min_similarity = arguments.get("min_similarity", 0.8)
+        
+        try:
+            clusters = self.kg_agent.analyze_document_clusters(min_similarity)
+            
+            if not clusters:
+                return [TextContent(type="text", text=f"No clusters found with minimum similarity {min_similarity}")]
+            
+            response_text = f"**Document Clusters (similarity ≥ {min_similarity}):**\n\n"
+            response_text += f"Found {len(clusters)} clusters:\n\n"
+            
+            for i, cluster in enumerate(clusters, 1):
+                response_text += f"**Cluster {i}** ({len(cluster)} documents):\n"
+                
+                for file_path in cluster:
+                    file_name = Path(file_path).name
+                    response_text += f"  • {file_name}\n"
+                    response_text += f"    `{file_path}`\n"
+                
+                response_text += "\n"
+            
+        except Exception as e:
+            response_text = f"Error analyzing clusters: {str(e)}"
+        
+        return [TextContent(type="text", text=response_text)]
+    
+    async def _handle_get_central_documents(self, arguments: dict) -> list[TextContent]:
+        """Handle central documents requests."""
+        await self._initialize_components()
+        
+        centrality_type = arguments.get("centrality_type", "betweenness")
+        max_results = arguments.get("max_results", 5)
+        
+        try:
+            central_docs = self.kg_agent.get_central_documents(centrality_type, max_results)
+            
+            if not central_docs:
+                return [TextContent(type="text", text="No central documents found")]
+            
+            response_text = f"**Most Central Documents ({centrality_type.title()} Centrality):**\n\n"
+            
+            for i, doc in enumerate(central_docs, 1):
+                file_name = Path(doc['file_path']).name
+                centrality = doc['centrality_score']
+                
+                response_text += f"{i}. **{file_name}**\n"
+                response_text += f"   Path: `{doc['file_path']}`\n"
+                response_text += f"   Centrality: {centrality:.3f}\n\n"
+            
+        except Exception as e:
+            response_text = f"Error finding central documents: {str(e)}"
+        
+        return [TextContent(type="text", text=response_text)]
+    
+    async def _handle_get_knowledge_graph_stats(self, arguments: dict) -> list[TextContent]:
+        """Handle knowledge graph statistics requests."""
+        await self._initialize_components()
+        
+        try:
+            stats = self.kg_agent.get_statistics()
+            
+            response_text = "**Knowledge Graph Statistics:**\n\n"
+            response_text += f"- Nodes: {stats['nodes']}\n"
+            response_text += f"- Edges: {stats['edges']}\n"
+            response_text += f"- Density: {stats['density']:.4f}\n"
+            response_text += f"- Average degree: {stats['avg_degree']:.2f}\n"
+            response_text += f"- Connected components: {stats['connected_components']}\n"
+            response_text += f"- Average clustering: {stats['avg_clustering']:.4f}\n"
+            
+        except Exception as e:
+            response_text = f"Error getting knowledge graph statistics: {str(e)}"
+        
+        return [TextContent(type="text", text=response_text)]
     
     async def run(self):
         """Run the MCP server."""
