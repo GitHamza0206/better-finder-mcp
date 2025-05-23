@@ -15,6 +15,7 @@ from .config import FinderConfig
 from .indexer import DocumentIndexer
 from .simple_agents import SimpleSearchAgent, SimpleIndexingAgent
 from .staging import StagingManager
+from .knowledge_graph import KnowledgeGraphAgent
 
 app = typer.Typer(
     help="Better Finder - Intelligent file search with MCP support",
@@ -485,6 +486,219 @@ def remove_file(
             
     except Exception as e:
         console.print(f"[red]Error removing file from index: {e}[/red]")
+
+
+@app.command("kg-build")
+def knowledge_graph_build(
+    similarity_threshold: float = typer.Option(0.7, "--threshold", "-t", help="Similarity threshold for edges")
+):
+    """Build knowledge graph from indexed documents."""
+    asyncio.run(_build_knowledge_graph_async(similarity_threshold))
+
+
+async def _build_knowledge_graph_async(similarity_threshold: float):
+    """Async knowledge graph building implementation."""
+    config = FinderConfig()
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Initializing knowledge graph...", total=None)
+        
+        indexer = DocumentIndexer(config)
+        indexer.load_or_create_index()
+        
+        if indexer.index is None or indexer.index.ntotal == 0:
+            console.print("[red]No indexed files found. Please run 'better-finder index' first.[/red]")
+            return
+        
+        kg_agent = KnowledgeGraphAgent(config, indexer)
+        
+        progress.update(task, description="Building knowledge graph...")
+        stats = await kg_agent.build_graph(similarity_threshold)
+        
+        progress.update(task, description="Saving knowledge graph...")
+    
+    # Display results
+    panel_content = f"""
+[green]✓[/green] Nodes added: {stats['nodes_added']}
+[green]✓[/green] Edges added: {stats['edges_added']}
+[red]✗[/red] Errors: {stats['errors']}
+[blue]i[/blue] Similarity threshold: {similarity_threshold}
+"""
+    
+    console.print(Panel(panel_content, title="Knowledge Graph Built", border_style="green"))
+
+
+@app.command("kg-related")
+def knowledge_graph_related(
+    file_path: str = typer.Argument(..., help="File path to find related documents"),
+    max_results: int = typer.Option(5, "--max", "-m", help="Maximum related documents")
+):
+    """Find documents related to a specific file using knowledge graph."""
+    config = FinderConfig()
+    
+    try:
+        indexer = DocumentIndexer(config)
+        indexer.load_or_create_index()
+        kg_agent = KnowledgeGraphAgent(config, indexer)
+        
+        related = kg_agent.find_related_documents(file_path, max_results)
+        
+        if not related:
+            console.print(f"[yellow]No related documents found for '{file_path}'[/yellow]")
+            return
+        
+        table = Table(title=f"Documents Related to '{Path(file_path).name}'")
+        table.add_column("File Name", style="cyan")
+        table.add_column("Path", style="blue")
+        table.add_column("Similarity", style="green", justify="center")
+        
+        for doc in related:
+            file_name = Path(doc['file_path']).name
+            display_path = doc['file_path']
+            if len(display_path) > 60:
+                display_path = "..." + display_path[-57:]
+            similarity = f"{doc['similarity_score']:.3f}"
+            
+            table.add_row(file_name, display_path, similarity)
+        
+        console.print(table)
+        
+    except Exception as e:
+        console.print(f"[red]Error finding related documents: {e}[/red]")
+
+
+@app.command("kg-clusters")
+def knowledge_graph_clusters(
+    min_similarity: float = typer.Option(0.8, "--min-sim", "-s", help="Minimum similarity for clusters")
+):
+    """Analyze document clusters in knowledge graph."""
+    config = FinderConfig()
+    
+    try:
+        indexer = DocumentIndexer(config)
+        indexer.load_or_create_index()
+        kg_agent = KnowledgeGraphAgent(config, indexer)
+        
+        clusters = kg_agent.analyze_document_clusters(min_similarity)
+        
+        if not clusters:
+            console.print(f"[yellow]No clusters found with minimum similarity {min_similarity}[/yellow]")
+            return
+        
+        console.print(f"[green]Found {len(clusters)} clusters with similarity ≥ {min_similarity}[/green]\n")
+        
+        for i, cluster in enumerate(clusters, 1):
+            console.print(f"[bold cyan]Cluster {i}[/bold cyan] ({len(cluster)} documents):")
+            for file_path in cluster:
+                file_name = Path(file_path).name
+                console.print(f"  • {file_name}")
+                console.print(f"    [dim]{file_path}[/dim]")
+            console.print()
+        
+    except Exception as e:
+        console.print(f"[red]Error analyzing clusters: {e}[/red]")
+
+
+@app.command("kg-central")
+def knowledge_graph_central(
+    centrality_type: str = typer.Option("betweenness", "--type", "-t", help="Centrality type"),
+    max_results: int = typer.Option(5, "--max", "-m", help="Maximum results")
+):
+    """Find most central/important documents in knowledge graph."""
+    config = FinderConfig()
+    
+    try:
+        indexer = DocumentIndexer(config)
+        indexer.load_or_create_index()
+        kg_agent = KnowledgeGraphAgent(config, indexer)
+        
+        central_docs = kg_agent.get_central_documents(centrality_type, max_results)
+        
+        if not central_docs:
+            console.print("[yellow]No central documents found[/yellow]")
+            return
+        
+        table = Table(title=f"Most Central Documents ({centrality_type.title()} Centrality)")
+        table.add_column("Rank", style="magenta", justify="center")
+        table.add_column("File Name", style="cyan")
+        table.add_column("Path", style="blue")
+        table.add_column("Centrality", style="green", justify="center")
+        
+        for i, doc in enumerate(central_docs, 1):
+            file_name = Path(doc['file_path']).name
+            display_path = doc['file_path']
+            if len(display_path) > 60:
+                display_path = "..." + display_path[-57:]
+            centrality = f"{doc['centrality_score']:.3f}"
+            
+            table.add_row(str(i), file_name, display_path, centrality)
+        
+        console.print(table)
+        
+    except Exception as e:
+        console.print(f"[red]Error finding central documents: {e}[/red]")
+
+
+@app.command("kg-visualize")
+def knowledge_graph_visualize(
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output file path"),
+    layout: str = typer.Option("spring", "--layout", "-l", help="Graph layout"),
+    figsize: str = typer.Option("12,8", "--figsize", "-f", help="Figure size (width,height)")
+):
+    """Visualize knowledge graph."""
+    config = FinderConfig()
+    
+    try:
+        # Parse figsize
+        width, height = map(int, figsize.split(','))
+        
+        indexer = DocumentIndexer(config)
+        indexer.load_or_create_index()
+        kg_agent = KnowledgeGraphAgent(config, indexer)
+        
+        output_path = kg_agent.visualize_knowledge_graph(
+            output_path=output,
+            layout=layout,
+            figsize=(width, height)
+        )
+        
+        console.print(f"[green]✓ Knowledge graph visualization saved to: {output_path}[/green]")
+        
+    except Exception as e:
+        console.print(f"[red]Error visualizing knowledge graph: {e}[/red]")
+
+
+@app.command("kg-stats")
+def knowledge_graph_stats():
+    """Show knowledge graph statistics."""
+    config = FinderConfig()
+    
+    try:
+        indexer = DocumentIndexer(config)
+        indexer.load_or_create_index()
+        kg_agent = KnowledgeGraphAgent(config, indexer)
+        
+        stats = kg_agent.get_statistics()
+        
+        table = Table(title="Knowledge Graph Statistics")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+        
+        table.add_row("Nodes", str(stats['nodes']))
+        table.add_row("Edges", str(stats['edges']))
+        table.add_row("Density", f"{stats['density']:.4f}")
+        table.add_row("Average Degree", f"{stats['avg_degree']:.2f}")
+        table.add_row("Connected Components", str(stats['connected_components']))
+        table.add_row("Average Clustering", f"{stats['avg_clustering']:.4f}")
+        
+        console.print(table)
+        
+    except Exception as e:
+        console.print(f"[red]Error getting knowledge graph statistics: {e}[/red]")
 
 
 @app.command()
