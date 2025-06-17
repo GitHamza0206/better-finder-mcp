@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/githamza0206-better-finder-mcp-badge.png)](https://mseep.ai/app/githamza0206-better-finder-mcp)
+
 # 🔍 Better Finder MCP
 
 **Git-like workflow for intelligent file search and Claude MCP integration**
